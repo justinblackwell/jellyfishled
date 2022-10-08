@@ -81,17 +81,17 @@ void setup() {
 
   Serial.println("Initialize MPU6050");
 
-  uint8_t gyro_tries = 10; // attempt gyro detect for 5 seconds
+  uint8_t gyro_tries = 1; // attempt gyro detect for 5 seconds
   
-//  while(!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_2G) && --gyro_tries > 0)
-//  {
-//    Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
-//    delay(500);
-//  }
-//  if(gyro_tries < 1){
-//    noGyro = true;
-//  }
-  noGyro = true;
+  while(!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_2G) && --gyro_tries > 0)
+  {
+    Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
+    delay(500);
+  }
+  
+  if(gyro_tries < 1){
+    noGyro = true;
+  }
 
   for(int strip = 0 ; strip < 8 ; strip++){ 
     easings[strip]->Init(0);
@@ -134,6 +134,9 @@ void calculateAngles(){
 
   Vector normAccel = mpu.readNormalizeAccel(); // Read normalized values 
 
+//  normAccel.ZAxis;
+  
+
   // Calculate Pitch & Roll
   angles[2] = (atan2(normAccel.YAxis, normAccel.ZAxis)*180.0)/M_PI;
   angles[0] = -(atan2(normAccel.XAxis, sqrt(normAccel.YAxis*normAccel.YAxis + normAccel.ZAxis*normAccel.ZAxis))*180.0)/M_PI;
@@ -156,6 +159,7 @@ void calculateAngles(){
 }
 
 void applyPhysics(){
+  int8_t jumpVelocity = 0;
   // @todo apply jumpVelocity to coords[] array
 }
 
