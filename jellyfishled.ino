@@ -7,15 +7,15 @@ FASTLED_USING_NAMESPACE
 
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
-#define NUM_LEDS    144
+#define NUM_LEDS    72
 #define NUM_STRIPS 1
-#define BRIGHTNESS          80
+#define BRIGHTNESS          20
 #define FRAMES_PER_SECOND  128
 #define MIN_LIT 5
 
 #define GRAVITY_LOW 8
 #define GRAVITY_HIGH 25
-#define FADE_RATE 30
+#define FADE_RATE 50
 #define GRAVITY_SAMPLE_RATE 1000/128
 
 #define RGB_SENSOR_BUTTON_PIN A0
@@ -39,7 +39,7 @@ byte gammatable[256]; // our RGB -> eye-recognized gamma color
 bool senseMode = false;
 
 CRGB lastColor = CRGB::Orange;
-CRGBPalette16 gTargetPalette(CRGB::Orange);
+CRGBPalette16 lastPalette(CRGB::Orange);
 
 void setup() {
   
@@ -59,11 +59,11 @@ void setup() {
   // set master brightness control
   FastLED.setBrightness(BRIGHTNESS);
   FastLED.setCorrection(TypicalLEDStrip);
-  FastLED.setTemperature(HighNoonSun);
+//  FastLED.setTemperature(Candle);
   FastLED.setDither(BRIGHTNESS < 255);
 
   // power mgmt
-  set_max_power_in_volts_and_milliamps(5, 500);
+  FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
 
   Serial.println("Initialize MPU6050");
 
@@ -80,6 +80,8 @@ void setup() {
   } else {
     Serial.println("found MPU6050 gyro");
   }
+
+  mpu.calibrateGyro();
 
   if (tcs.begin()) {
     Serial.println("Found RGB sensor");
@@ -110,35 +112,44 @@ void setupGammaTable(){
 
 void loop() {
 
-  EVERY_N_MILLISECONDS( 1000/FRAMES_PER_SECOND ) { gHue += 1; rainbowHue +=1; } // slowly cycle the "base color" through the rainbow
-  EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { detectJump(); } // calculate tilt angles
+  EVERY_N_MILLISECONDS( 1000/FRAMES_PER_SECOND ) { rainbowHue +=1; } // slowly cycle the "base color" through the rainbow
+  
+  EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { 
+    detectJump();
+  }
+  
 //  EVERY_N_SECONDS( 15 ) { senseMode = false; }
+  
+  EVERY_N_SECONDS( 2 ) { 
+//    Serial.print("max_brightness_for_power_mW: "); 
+//    Serial.println( calculate_max_brightness_for_power_mW(leds[0], NUM_LEDS, BRIGHTNESS, 500)); 
+  }
+  
   int howfar = 0;
   
   senseColor();
   
   for(int x = 0; x < NUM_STRIPS ; x++){
+
+    CRGBSet refleds(leds[x], NUM_LEDS);
     
     howfar = map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, NUM_LEDS);
     
+    refleds(howfar, NUM_LEDS-howfar-1).fadeToBlackBy(FADE_RATE);
+    
     if(true || senseMode){
-        colorwaves( leds[x], howfar, gTargetPalette);//gCurrentPalette);
-
-//      fill_gradient_RGB(leds[x], 0, lastColor, howfar-1, CRGB::Black);
+      fill_gradient_RGB(leds[x], 0, lastColor, howfar-1, CRGB::Black);
 //      fill_solid(leds[x], howfar-1, lastColor);
+//      colorwaves( leds[x], howfar, lastPalette);//gCurrentPalette);
+
     } else {
-      rainbow(x, howfar);
-//    rainbow(x, NUM_LEDS);
+      fill_rainbow( leds[x], howfar, rainbowHue, 7);
     }
-
-    fadeToBlackBy(leds[x], NUM_LEDS, FADE_RATE);
-
+    
     FastLED.show();
   }
   
   FastLED.delay(1000/FRAMES_PER_SECOND);
-  
-//  Serial.print("max_brightness_for_power_mW: "); Serial.println( calculate_max_brightness_for_power_mW(leds[0], NUM_LEDS, 5, 500));
 }
 
 void detectJump(){
@@ -163,10 +174,6 @@ void detectJump(){
 
 }
 
-void rainbow(int strip, uint8_t howfar){
-  fill_rainbow( leds[strip], howfar ? howfar : NUM_LEDS, rainbowHue, 7);
-}
-
 void senseColor(){
   
   // check analog switch 
@@ -189,8 +196,7 @@ void senseColor(){
   tcs.setInterrupt(false);  // turn on LED
 
   delay(60);  // takes 50ms to read
-  
-//  tcs.getRGB(&r, &g, &b);
+
   tcs.getRawData(&red, &green, &blue, &clr);
   
   tcs.setInterrupt(true);  // turn off LED
@@ -204,7 +210,6 @@ void senseColor(){
   g = green; g /= sum;
   b = blue; b /= sum;
   r *= 256; g *= 256; b *= 256;
-
 
   Serial.println("From sensor:");
   Serial.print("R:\t"); Serial.print(int(red));
@@ -232,7 +237,7 @@ void senseColor(){
   Serial.print("\n");
 
   lastColor = CRGB(gammatable[(int)r], gammatable[(int)g], gammatable[(int)b]);
-  gTargetPalette = CRGBPalette16(CRGB (gammatable[(int)r], gammatable[(int)g], gammatable[(int)b]));
+  lastPalette = CRGBPalette16(lastColor);
 
 }
 
@@ -276,8 +281,8 @@ void colorwaves( CRGB* ledarray, int howfar, CRGBPalette16& palette) {
     bri8 += (255 - brightdepth);
     
     uint8_t index = hue8;
-    index = triwave8( index);
-    //index = scale8( index, 240);
+//    index = triwave8( index);
+    index = scale8( index, 240);
  
     CRGB newcolor = ColorFromPalette( palette, index, bri8);
  
@@ -285,7 +290,5 @@ void colorwaves( CRGB* ledarray, int howfar, CRGBPalette16& palette) {
     pixelnumber = (howfar-1) - pixelnumber;
     
     nblend( ledarray[pixelnumber], newcolor, 128);
-
-
   }
 }
