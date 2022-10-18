@@ -7,11 +7,19 @@ FASTLED_USING_NAMESPACE
 
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
-#define NUM_LEDS    72
+#define NUM_LEDS    15
 #define NUM_STRIPS 1
-#define BRIGHTNESS          20
+#define BRIGHTNESS          40
 #define FRAMES_PER_SECOND  128
-#define MIN_LIT 5
+#define MIN_LIT 2
+
+#define LEG_LEDS  72 //15 // leds per tentacle
+#define HEAD_LEDS 8 // 36 // leds per head segment
+#define RING_LEDS 47 // leds in ring around head
+
+#define HEAD_LED_PIN 11
+#define RING_LED_PIN 12
+#define LEG_LED_PIN  10
 
 #define GRAVITY_LOW 8
 #define GRAVITY_HIGH 25
@@ -20,9 +28,15 @@ FASTLED_USING_NAMESPACE
 
 #define RGB_SENSOR_BUTTON_PIN A0
 
-CRGB leds[NUM_STRIPS][NUM_LEDS]; // holder of all LED CRGB values
+CRGBArray<NUM_LEDS> ledsl; // holder of all LED CRGB values for tentacles
+CRGBArray<HEAD_LEDS> ledsh; // holder of each head segment leds
+CRGBArray<RING_LEDS> ledsr; // holds all leds for ring
 
-uint8_t gHue = 0; // rotating "base color" used by many of the patterns
+CRGBSet legleds(ledsl, LEG_LEDS);
+CRGBSet headleds(ledsh, HEAD_LEDS);
+CRGBSet ringleds(ledsr, RING_LEDS);
+
+//uint8_t gHue = 0; // rotating "base color" used by many of the patterns
 uint8_t rainbowHue = 0;
 
 float jumpVelocity = 0.0; // +- gravity multiplier
@@ -36,10 +50,9 @@ Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_154MS, TCS347
 bool noRgbSensor = false; // no RGB sensor found
 byte gammatable[256]; // our RGB -> eye-recognized gamma color
 
-bool senseMode = false;
 
 CRGB lastColor = CRGB::Orange;
-CRGBPalette16 lastPalette(CRGB::Orange);
+CRGBPalette16 lastPalette(lastColor);
 
 void setup() {
   
@@ -47,14 +60,9 @@ void setup() {
   Serial.begin(115200);
   
   // init all strips on their respective data pins  
-  FastLED.addLeds<LED_TYPE,10, COLOR_ORDER>(leds[0], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 8, COLOR_ORDER>(leds[1], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 4, COLOR_ORDER>(leds[2], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 9, COLOR_ORDER>(leds[3], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 7, COLOR_ORDER>(leds[4], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 3, COLOR_ORDER>(leds[5], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 6, COLOR_ORDER>(leds[6], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 5, COLOR_ORDER>(leds[7], NUM_LEDS);
+  FastLED.addLeds<LED_TYPE, LEG_LED_PIN, COLOR_ORDER>(ledsl, LEG_LEDS);
+//  FastLED.addLeds<LED_TYPE, HEAD_LED_PIN, COLOR_ORDER>(headleds, HEAD_LEDS);
+//  FastLED.addLeds<LED_TYPE, RING_LED_PIN, COLOR_ORDER>(ringleds, RING_LEDS);
 
   // set master brightness control
   FastLED.setBrightness(BRIGHTNESS);
@@ -125,29 +133,32 @@ void loop() {
 //    Serial.println( calculate_max_brightness_for_power_mW(leds[0], NUM_LEDS, BRIGHTNESS, 500)); 
   }
   
-  int howfar = 0;
+  uint8_t howfar = 0;
   
   senseColor();
   
-  for(int x = 0; x < NUM_STRIPS ; x++){
+  // set the head leds 
+//  colorwaves(headleds, HEAD_LEDS, lastPalette);
 
-    CRGBSet refleds(leds[x], NUM_LEDS);
-    
-    howfar = map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, NUM_LEDS);
-    
-    refleds(howfar, NUM_LEDS-howfar-1).fadeToBlackBy(FADE_RATE);
-    
-    if(true || senseMode){
-      fill_gradient_RGB(leds[x], 0, lastColor, howfar-1, CRGB::Black);
-//      fill_solid(leds[x], howfar-1, lastColor);
-//      colorwaves( leds[x], howfar, lastPalette);//gCurrentPalette);
+  howfar = map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
 
-    } else {
-      fill_rainbow( leds[x], howfar, rainbowHue, 7);
-    }
+  /*
+   * !!These fade calls are breaking my interrupt control of the RGB sensor!!
+   */
+//  legleds(howfar, LEG_LEDS-howfar-1).fadeToBlackBy(FADE_RATE);
+//  fadeToBlackBy(legleds, LEG_LEDS, FADE_RATE);
+
+//  fill_gradient_RGB(legleds, 0, lastColor, howfar, CRGB::Black);
+//  fill_gradient_RGB(leds[x], 0, lastColor, howfar-1, CRGB::Black);
+  colorwaves(legleds, howfar, lastPalette);
+//  fill_solid(legleds, howfar-1, lastColor);
+//  fill_rainbow( leds[x], howfar, rainbowHue, 7);
+
+  // set the ring leds
+//colorwaves(ringleds, RING_LEDS, lastPalette);
     
-    FastLED.show();
-  }
+  FastLED.show();
+
   
   FastLED.delay(1000/FRAMES_PER_SECOND);
 }
@@ -183,16 +194,13 @@ void senseColor(){
 
   if(noRgbSensor) {
     Serial.println("no RGB sensor found");
-    senseMode = false;
     return;
   }
   
   uint32_t sum;
   uint16_t red, green, blue, clr;
   float r, g, b;
-
-  senseMode = true;
-  
+ 
   tcs.setInterrupt(false);  // turn on LED
 
   delay(60);  // takes 50ms to read
