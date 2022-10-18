@@ -56,7 +56,6 @@ void setup() {
   
   delay(3000);
   Serial.begin(115200);
-  Wire.begin();
   
   // init all strips on their respective data pins  
   FastLED.addLeds<LED_TYPE, LEG_LED_PIN, COLOR_ORDER>(legleds, LEG_LEDS);
@@ -95,7 +94,7 @@ void setup() {
   Serial.print("Initialize TCS34725...");
   if (tcs.begin()) {
     Serial.println("Found RGB sensor");
-//    tcs.setInterrupt(true);
+    tcs.setInterrupt(true);
   } else {
     noRgbSensor = true;
     Serial.println("No TCS34725 found ... check your connections");
@@ -188,20 +187,18 @@ void senseColor(){
   if(digitalRead(RGB_SENSOR_BUTTON_PIN)){
     return;
   }
-
-  Serial.println("Button pressed");
   
   uint32_t sum;
   uint16_t red, green, blue, clr;
   float r, g, b;
   
-//  tcs.setInterrupt(false);  // turn on LED
+  tcs.setInterrupt(false);  // turn on LED
 
   delay(60);  // takes 50ms to read
 
   tcs.getRawData(&red, &green, &blue, &clr);
   
-//  tcs.setInterrupt(true);  // turn off LED
+  tcs.setInterrupt(true);  // turn off LED
 
   // Figure out some basic hex code for visualization
   sum = red;
