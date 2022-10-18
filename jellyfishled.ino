@@ -7,22 +7,36 @@ FASTLED_USING_NAMESPACE
 
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
-#define NUM_LEDS    72
+#define NUM_LEDS    15
 #define NUM_STRIPS 1
-#define BRIGHTNESS          20
+#define BRIGHTNESS          40
 #define FRAMES_PER_SECOND  128
-#define MIN_LIT 5
+#define MIN_LIT 2
+
+#define LEG_LEDS  72 //15 // leds per tentacle
+#define HEAD_LEDS 8 // 36 // leds per head segment
+#define RING_LEDS 47 // leds in ring around head
+
+#define HEAD_LED_PIN 11
+#define RING_LED_PIN 12
+#define LEG_LED_PIN  10
 
 #define GRAVITY_LOW 8
-#define GRAVITY_HIGH 25
-#define FADE_RATE 50
+#define GRAVITY_HIGH 16
+#define FADE_RATE 10
 #define GRAVITY_SAMPLE_RATE 1000/128
 
 #define RGB_SENSOR_BUTTON_PIN A0
 
-CRGB leds[NUM_STRIPS][NUM_LEDS]; // holder of all LED CRGB values
+CRGBArray<NUM_LEDS> ledsl; // holder of all LED CRGB values for tentacles
+CRGBArray<HEAD_LEDS> ledsh; // holder of each head segment leds
+CRGBArray<RING_LEDS> ledsr; // holds all leds for ring
 
-uint8_t gHue = 0; // rotating "base color" used by many of the patterns
+CRGBSet legleds(ledsl, LEG_LEDS);
+CRGBSet headleds(ledsh, HEAD_LEDS);
+CRGBSet ringleds(ledsr, RING_LEDS);
+
+//uint8_t gHue = 0; // rotating "base color" used by many of the patterns
 uint8_t rainbowHue = 0;
 
 float jumpVelocity = 0.0; // +- gravity multiplier
@@ -34,38 +48,31 @@ bool noGyro = false; // gyro detected
 
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_1X);
 bool noRgbSensor = false; // no RGB sensor found
-byte gammatable[256]; // our RGB -> eye-recognized gamma color
-
-bool senseMode = false;
 
 CRGB lastColor = CRGB::Orange;
-CRGBPalette16 lastPalette(CRGB::Orange);
+CRGBPalette16 lastPalette(lastColor);
 
 void setup() {
   
-  delay(3000); 
+  delay(3000);
   Serial.begin(115200);
+  Wire.begin();
   
   // init all strips on their respective data pins  
-  FastLED.addLeds<LED_TYPE,10, COLOR_ORDER>(leds[0], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 8, COLOR_ORDER>(leds[1], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 4, COLOR_ORDER>(leds[2], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 9, COLOR_ORDER>(leds[3], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 7, COLOR_ORDER>(leds[4], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 3, COLOR_ORDER>(leds[5], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 6, COLOR_ORDER>(leds[6], NUM_LEDS);
-//  FastLED.addLeds<LED_TYPE, 5, COLOR_ORDER>(leds[7], NUM_LEDS);
+  FastLED.addLeds<LED_TYPE, LEG_LED_PIN, COLOR_ORDER>(legleds, LEG_LEDS);
+  FastLED.addLeds<LED_TYPE, HEAD_LED_PIN, COLOR_ORDER>(headleds, HEAD_LEDS);
+  FastLED.addLeds<LED_TYPE, RING_LED_PIN, COLOR_ORDER>(ringleds, RING_LEDS);
 
   // set master brightness control
   FastLED.setBrightness(BRIGHTNESS);
   FastLED.setCorrection(TypicalLEDStrip);
-//  FastLED.setTemperature(Candle);
-  FastLED.setDither(BRIGHTNESS < 255);
+  FastLED.setTemperature(Candle);
+//  FastLED.setDither(BRIGHTNESS < 255);
 
   // power mgmt
-  FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
+//  FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
 
-  Serial.println("Initialize MPU6050");
+  Serial.print("Initialize MPU6050...");
 
   uint8_t gyro_tries = 10; // attempt gyro detect for 5 seconds
   
@@ -77,15 +84,18 @@ void setup() {
   
   if(gyro_tries < 1){
     noGyro = true;
+    Serial.println("No Gyro found");
   } else {
-    Serial.println("found MPU6050 gyro");
+    Serial.println("found MPU6050 gyro.");
+//    Serial.print("Calibrating gyro...");
+//    mpu.calibrateGyro();
+//    Serial.println("calibration complete.");
   }
 
-  mpu.calibrateGyro();
-
+  Serial.print("Initialize TCS34725...");
   if (tcs.begin()) {
     Serial.println("Found RGB sensor");
-    tcs.setInterrupt(true);
+//    tcs.setInterrupt(true);
   } else {
     noRgbSensor = true;
     Serial.println("No TCS34725 found ... check your connections");
@@ -93,61 +103,54 @@ void setup() {
 
   pinMode(RGB_SENSOR_BUTTON_PIN, INPUT_PULLUP);
 
-  setupGammaTable();
-  
+  Serial.println("ready to roll");
 }
 
-void setupGammaTable(){
-  for (int i=0; i<256; i++) {
-    float x = i;
-    x /= 255;
-    x = pow(x, 2.5);
-    x *= 255;
-
-    gammatable[i] = x;
-
-    //Serial.println(gammatable[i]);
-  }
+uint8_t getGamma(float x){
+  x /= 255;
+  x = pow(x, 2.5);
+  x *= 255;
+  return (uint8_t) x;
 }
 
 void loop() {
 
-  EVERY_N_MILLISECONDS( 1000/FRAMES_PER_SECOND ) { rainbowHue +=1; } // slowly cycle the "base color" through the rainbow
-  
-  EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { 
+  EVERY_N_MILLISECONDS( 1000/FRAMES_PER_SECOND ) { 
+    rainbowHue +=1; // slowly cycle the "base color" through the rainbow
     detectJump();
   }
   
+//  EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { 
+//    detectJump();
+//  }
+  
 //  EVERY_N_SECONDS( 15 ) { senseMode = false; }
   
-  EVERY_N_SECONDS( 2 ) { 
+//  EVERY_N_SECONDS( 2 ) { 
 //    Serial.print("max_brightness_for_power_mW: "); 
 //    Serial.println( calculate_max_brightness_for_power_mW(leds[0], NUM_LEDS, BRIGHTNESS, 500)); 
-  }
+//  }
   
-  int howfar = 0;
+  uint8_t howfar = 0;
   
   senseColor();
+
+  // set the head leds 
+  colorwaves(headleds, HEAD_LEDS, lastPalette);
   
-  for(int x = 0; x < NUM_STRIPS ; x++){
+  howfar = map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
+  
+  legleds(howfar, LEG_LEDS).fadeToBlackBy(FADE_RATE);
+  
+//  fill_gradient_RGB(legleds, 0, lastColor, howfar, CRGB::Black);
+//  fill_gradient_RGB(leds[x], 0, lastColor, howfar-1, CRGB::Black);
+  colorwaves(legleds, howfar, lastPalette);
+//  fill_solid(legleds, howfar-1, lastColor);
+//  fill_rainbow( leds[x], howfar, rainbowHue, 7);
 
-    CRGBSet refleds(leds[x], NUM_LEDS);
-    
-    howfar = map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, NUM_LEDS);
-    
-    refleds(howfar, NUM_LEDS-howfar-1).fadeToBlackBy(FADE_RATE);
-    
-    if(true || senseMode){
-      fill_gradient_RGB(leds[x], 0, lastColor, howfar-1, CRGB::Black);
-//      fill_solid(leds[x], howfar-1, lastColor);
-//      colorwaves( leds[x], howfar, lastPalette);//gCurrentPalette);
+  colorwaves(ringleds, RING_LEDS, lastPalette);
 
-    } else {
-      fill_rainbow( leds[x], howfar, rainbowHue, 7);
-    }
-    
-    FastLED.show();
-  }
+  FastLED.show();
   
   FastLED.delay(1000/FRAMES_PER_SECOND);
 }
@@ -175,31 +178,30 @@ void detectJump(){
 }
 
 void senseColor(){
+
+  if(noRgbSensor) {
+    Serial.println("no RGB sensor found");
+    return;
+  }
   
   // check analog switch 
   if(digitalRead(RGB_SENSOR_BUTTON_PIN)){
     return;
   }
 
-  if(noRgbSensor) {
-    Serial.println("no RGB sensor found");
-    senseMode = false;
-    return;
-  }
+  Serial.println("Button pressed");
   
   uint32_t sum;
   uint16_t red, green, blue, clr;
   float r, g, b;
-
-  senseMode = true;
   
-  tcs.setInterrupt(false);  // turn on LED
+//  tcs.setInterrupt(false);  // turn on LED
 
   delay(60);  // takes 50ms to read
 
   tcs.getRawData(&red, &green, &blue, &clr);
   
-  tcs.setInterrupt(true);  // turn off LED
+//  tcs.setInterrupt(true);  // turn off LED
 
   // Figure out some basic hex code for visualization
   sum = red;
@@ -227,18 +229,17 @@ void senseColor(){
   Serial.print((int)r, HEX); Serial.print((int)g, HEX); Serial.print((int)b, HEX);
   Serial.print("\n");
 
-  Serial.println("Gamma corrected:");
-  Serial.print("R:\t"); Serial.print(gammatable[(int)r]);
-  Serial.print("\tG:\t"); Serial.print(gammatable[(int)g]);
-  Serial.print("\tB:\t"); Serial.print(gammatable[(int)b]);
-  Serial.print("\t");
-  Serial.print(gammatable[(int)r], HEX); Serial.print(gammatable[(int)g], HEX); Serial.print(gammatable[(int)b], HEX);
-  Serial.print("\n");
-  Serial.print("\n");
+//  Serial.println("Gamma corrected:");
+//  Serial.print("R:\t"); Serial.print(gammatable[(int)r]);
+//  Serial.print("\tG:\t"); Serial.print(gammatable[(int)g]);
+//  Serial.print("\tB:\t"); Serial.print(gammatable[(int)b]);
+//  Serial.print("\t");
+//  Serial.print(gammatable[(int)r], HEX); Serial.print(gammatable[(int)g], HEX); Serial.print(gammatable[(int)b], HEX);
+//  Serial.print("\n");
+//  Serial.print("\n");
 
-  lastColor = CRGB(gammatable[(int)r], gammatable[(int)g], gammatable[(int)b]);
+  lastColor = CRGB(getGamma(r), getGamma(g), getGamma(b));
   lastPalette = CRGBPalette16(lastColor);
-
 }
 
 // This function draws color waves with an ever-changing,
