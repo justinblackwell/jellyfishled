@@ -1,9 +1,14 @@
+#define FASTLED_INTERRUPT_RETRY_COUNT 1
+
 #include <Wire.h>
 #include <MPU6050.h>
 #include <Adafruit_TCS34725.h>
 #include <FastLED.h>
 
 FASTLED_USING_NAMESPACE
+
+#define DEBUG true
+#define CALIBRATE_GYRO false
 
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
@@ -36,15 +41,16 @@ CRGBSet legleds(ledsl, LEG_LEDS);
 CRGBSet headleds(ledsh, HEAD_LEDS);
 CRGBSet ringleds(ledsr, RING_LEDS);
 
-//uint8_t gHue = 0; // rotating "base color" used by many of the patterns
 uint8_t rainbowHue = 0;
 
 float jumpVelocity = 0.0; // +- gravity multiplier
-//float hardestJump = 0.0; // max G
-//float lightestJump = 0.0; // min G
+#ifdef DEBUG
+  float hardestJump = 0.0; // max G
+  float lightestJump = 0.0; // min G
+#endif
 
 MPU6050 mpu; // gyro device
-bool noGyro = false; // gyro detected
+bool noGyro = false; // no gyro detected
 
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_1X);
 bool noRgbSensor = false; // no RGB sensor found
@@ -57,19 +63,25 @@ void setup() {
   delay(3000);
   Serial.begin(115200);
   
-  // init all strips on their respective data pins  
+  // init all strips on their respective data pins
+
+  // add tentacle led strip(s)
   FastLED.addLeds<LED_TYPE, LEG_LED_PIN, COLOR_ORDER>(legleds, LEG_LEDS);
+
+  // add head led strip(s)
   FastLED.addLeds<LED_TYPE, HEAD_LED_PIN, COLOR_ORDER>(headleds, HEAD_LEDS);
+
+  // add ring led strip
   FastLED.addLeds<LED_TYPE, RING_LED_PIN, COLOR_ORDER>(ringleds, RING_LEDS);
 
   // set master brightness control
   FastLED.setBrightness(BRIGHTNESS);
   FastLED.setCorrection(TypicalLEDStrip);
   FastLED.setTemperature(Candle);
-//  FastLED.setDither(BRIGHTNESS < 255);
+  FastLED.setDither(BRIGHTNESS < 255);
 
   // power mgmt
-//  FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
+  FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
 
   Serial.print("Initialize MPU6050...");
 
@@ -86,9 +98,11 @@ void setup() {
     Serial.println("No Gyro found");
   } else {
     Serial.println("found MPU6050 gyro.");
-//    Serial.print("Calibrating gyro...");
-//    mpu.calibrateGyro();
-//    Serial.println("calibration complete.");
+#ifdef CALIBRATE_GYRO
+    Serial.print("Calibrating gyro...");
+    mpu.calibrateGyro();
+    Serial.println("calibration complete.");
+#endif
   }
 
   Serial.print("Initialize TCS34725...");
@@ -105,6 +119,12 @@ void setup() {
   Serial.println("ready to roll");
 }
 
+/**
+ * Convert RGB -> eye-recognized gamma color
+ * Very inefficient to call this frequently, but this is only used when the 
+ * "sense color" button is pressed. The freeing of 256B of memory was worth 
+ * the performance hit upon infrequent user input. 
+ */
 uint8_t getGamma(float x){
   x /= 255;
   x = pow(x, 2.5);
@@ -114,44 +134,46 @@ uint8_t getGamma(float x){
 
 void loop() {
 
+  static uint8_t howfar = MIN_LIT; // start with the minimum leds lit
+  
   EVERY_N_MILLISECONDS( 1000/FRAMES_PER_SECOND ) { 
     rainbowHue +=1; // slowly cycle the "base color" through the rainbow
-    detectJump();
   }
   
-//  EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { 
-//    detectJump();
-//  }
+  EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { 
+    detectJump();
+    howfar = (uint8_t) map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
+  }
   
-//  EVERY_N_SECONDS( 15 ) { senseMode = false; }
+  senseColor(); // detect color if button is pressed
   
-//  EVERY_N_SECONDS( 2 ) { 
-//    Serial.print("max_brightness_for_power_mW: "); 
-//    Serial.println( calculate_max_brightness_for_power_mW(leds[0], NUM_LEDS, BRIGHTNESS, 500)); 
-//  }
-  
-  uint8_t howfar = 0;
-  
-  senseColor();
+  /**
+   * WHY DO ANY OF THESE CALLS BREAK THE TCS34725 INTERRUPT CONTROL!!!???
+   * https://github.com/FastLED/FastLED/wiki/Interrupt-problems
+   */
+    // fade the old leg leds
+    legleds(howfar, LEG_LEDS-howfar).fadeToBlackBy(FADE_RATE);
+//  legleds(howfar, LEG_LEDS-howfar).nscale8(192);
+//  legleds(howfar, LEG_LEDS-howfar).fill_solid(CRGB::Black);
+//  fadeToBlackBy(ledsl, LEG_LEDS, FADE_RATE);    
+
+  // set the leg leds
+  colorwaves(ledsl, howfar, lastPalette);
+  // alternative ways of filling leg leds
+//  fill_solid(legleds, howfar, lastColor);
+//  fill_gradient_RGB(legleds, 0, lastColor, howfar, CRGB::Black);
+//  fill_rainbow(legleds, howfar, rainbowHue, 7);
+
+  // set the ring leds
+  colorwaves(ringleds, RING_LEDS, lastPalette);
 
   // set the head leds 
   colorwaves(headleds, HEAD_LEDS, lastPalette);
-  
-  howfar = map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
-  
-  legleds(howfar, LEG_LEDS).fadeToBlackBy(FADE_RATE);
-  
-//  fill_gradient_RGB(legleds, 0, lastColor, howfar, CRGB::Black);
-//  fill_gradient_RGB(leds[x], 0, lastColor, howfar-1, CRGB::Black);
-  colorwaves(legleds, howfar, lastPalette);
-//  fill_solid(legleds, howfar-1, lastColor);
-//  fill_rainbow( leds[x], howfar, rainbowHue, 7);
-
-  colorwaves(ringleds, RING_LEDS, lastPalette);
 
   FastLED.show();
   
   FastLED.delay(1000/FRAMES_PER_SECOND);
+
 }
 
 void detectJump(){
@@ -161,21 +183,28 @@ void detectJump(){
   }
 
   jumpVelocity = mpu.readNormalizeAccel().ZAxis; // Read normalized Z value
+
+#ifdef DEBUG
+
+  if(jumpVelocity > hardestJump){
+    hardestJump = jumpVelocity; 
+    Serial.print("hardestJump:"); Serial.println(hardestJump);
+  }
   
-//  Serial.println(jumpVelocity);
-  
-//  if(jumpVelocity > hardestJump){
-//    hardestJump = jumpVelocity; 
-////    Serial.print("hardestJump:"); Serial.println(hardestJump);
-//  }
-//  
-//  if(jumpVelocity < lightestJump){
-//    lightestJump = jumpVelocity; 
-////    Serial.print("lightestJump:"); Serial.println(lightestJump);
-//  }
+  if(jumpVelocity < lightestJump){
+    lightestJump = jumpVelocity; 
+    Serial.print("lightestJump:"); Serial.println(lightestJump);
+  }
+
+#endif 
 
 }
 
+
+/**
+ * Check for analog button press, interrupt RGB sensor (to light LED), read values, then disable LED. 
+ * Use consumed values to create new CRGB color and Palette object for consumption by main loop.
+ */
 void senseColor(){
 
   if(noRgbSensor) {
@@ -210,6 +239,7 @@ void senseColor(){
   b = blue; b /= sum;
   r *= 256; g *= 256; b *= 256;
 
+#ifdef DEBUG
   Serial.println("From sensor:");
   Serial.print("R:\t"); Serial.print(int(red));
   Serial.print("\tG:\t"); Serial.print(int(green));
@@ -226,14 +256,15 @@ void senseColor(){
   Serial.print((int)r, HEX); Serial.print((int)g, HEX); Serial.print((int)b, HEX);
   Serial.print("\n");
 
-//  Serial.println("Gamma corrected:");
-//  Serial.print("R:\t"); Serial.print(gammatable[(int)r]);
-//  Serial.print("\tG:\t"); Serial.print(gammatable[(int)g]);
-//  Serial.print("\tB:\t"); Serial.print(gammatable[(int)b]);
-//  Serial.print("\t");
-//  Serial.print(gammatable[(int)r], HEX); Serial.print(gammatable[(int)g], HEX); Serial.print(gammatable[(int)b], HEX);
-//  Serial.print("\n");
-//  Serial.print("\n");
+  Serial.println("Gamma corrected:");
+  Serial.print("R:\t"); Serial.print(getGamma(r));
+  Serial.print("\tG:\t"); Serial.print(getGamma(g));
+  Serial.print("\tB:\t"); Serial.print(getGamma(b));
+  Serial.print("\t");
+  Serial.print(getGamma(r), HEX); Serial.print(getGamma(g), HEX); Serial.print(getGamma(b), HEX);
+  Serial.print("\n");
+  Serial.print("\n");
+#endif
 
   lastColor = CRGB(getGamma(r), getGamma(g), getGamma(b));
   lastPalette = CRGBPalette16(lastColor);
