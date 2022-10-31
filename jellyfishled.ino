@@ -3,17 +3,17 @@
 #include <Adafruit_TCS34725.h>
 #include <FastLED.h>
 
+
 FASTLED_USING_NAMESPACE
 
 #define DEBUG false
-#define DEBUG_POWER true
+#define DEBUG_POWER false
 #define CALIBRATE_GYRO false
 
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
 #define NUM_LEDS    15
-#define NUM_STRIPS 1
-#define BRIGHTNESS 255
+#define BRIGHTNESS 144
 #define FRAMES_PER_SECOND 128
 #define MIN_LIT 7
 #define GAMMA_MULTIPLIER 2.5
@@ -27,9 +27,13 @@ FASTLED_USING_NAMESPACE
 #define RING_LED_PIN 12
 
 #define GRAVITY_LOW 0
-#define GRAVITY_HIGH 18
+#define GRAVITY_HIGH 12
+#define X_HIGH 5
+#define X_LOW -5
+#define Y_HIGH 5
+#define Y_LOW -5
 #define FADE_RATE 120
-#define GRAVITY_SAMPLE_RATE 1000/128
+#define GRAVITY_SAMPLE_RATE 1000/512
 
 #define RGB_SENSOR_BUTTON_PIN A0
 
@@ -58,8 +62,9 @@ bool noGyro = false; // no gyro detected
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_1X);
 bool noRgbSensor = false; // no RGB sensor found
 
-CRGB lastColor = CRGB::SkyBlue;
-CRGBPalette16 lastPalette = OceanColors_p;
+CRGB lastColor = CRGB::Blue;
+// CRGBPalette16 lastPalette = OceanColors_p;
+CRGBPalette16 lastPalette(lastColor);
 
 void setup() {
   
@@ -120,6 +125,7 @@ void setup() {
   pinMode(RGB_SENSOR_BUTTON_PIN, INPUT_PULLUP);
 
   Serial.println("all systems go.");
+  
 }
 
 /**
@@ -145,72 +151,78 @@ void loop() {
     rainbowHue +=1; // slowly cycle the "base color" through the rainbow
   }
 
-  #if DEBUG_POWER
-  EVERY_N_SECONDS( 2 ) {
-
-    headled_mw = scale8(8 * calculate_unscaled_power_mW(headleds, HEAD_LEDS), BRIGHTNESS);
-    ringled_mw = scale8(calculate_unscaled_power_mW(ringleds, RING_LEDS), BRIGHTNESS);
-    legled_mw = scale8(8 * calculate_unscaled_power_mW(legleds, howfar), BRIGHTNESS);
-
-    Serial.print("headleds:");
-    Serial.println(headled_mw);
-    
-    Serial.print("ringleds:");
-    Serial.println(ringled_mw);
-
-    Serial.print("legleds:");
-    Serial.println(legled_mw);
-
-    Serial.print("total:");
-    Serial.println(legled_mw + ringled_mw + headled_mw);
-
-    Serial.println("");
+  EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { 
+    detectJump();
+    howfar = (uint8_t) map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
   }
-  #endif
-  
-  // EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { 
-  //   detectJump();
-  //   howfar = (uint8_t) map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
-  // }
 
-  detectJump();
-  howfar = (uint8_t) map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
+  #if DEBUG_POWER
+    EVERY_N_SECONDS( 2 ) {
+
+      headled_mw = scale8(8 * calculate_unscaled_power_mW(headleds, HEAD_LEDS), BRIGHTNESS);
+      ringled_mw = scale8(calculate_unscaled_power_mW(ringleds, RING_LEDS), BRIGHTNESS);
+      legled_mw = scale8(8 * calculate_unscaled_power_mW(legleds, howfar), BRIGHTNESS);
+
+      Serial.print("headleds:");
+      Serial.println(headled_mw);
+      
+      Serial.print("ringleds:");
+      Serial.println(ringled_mw);
+
+      Serial.print("legleds:");
+      Serial.println(legled_mw);
+
+      Serial.print("total:");
+      Serial.println(legled_mw + ringled_mw + headled_mw);
+
+      Serial.println("");
+    }
+  #endif
+
+  // detectJump();
+  // howfar = (uint8_t) map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
 
   #if DEBUG
-    Serial.print("How Far:"); Serial.print(howfar); Serial.print(",");
+    Serial.print("howfar:"); Serial.print(howfar); Serial.print(",");
+    Serial.print("R:"); Serial.print(lastColor.r); Serial.print(",");
+    Serial.print("G:"); Serial.print(lastColor.g); Serial.print(","); 
+    Serial.print("B:"); Serial.print(lastColor.b); Serial.print(",");
   #endif
+
+  senseColor(); // read RGB sensor 
 
   // fade out unused legleds
   legleds(howfar, LEG_LEDS).fadeToBlackBy(FADE_RATE);
-//  legleds(howfar, LEG_LEDS-howfar+1).nscale8(192);
-//  legleds(howfar, LEG_LEDS-howfar).fill_solid(CRGB::Black);
-//  fadeToBlackBy(ledsl, LEG_LEDS, FADE_RATE);    
-//  legleds.fill_solid(CRGB::Black);
+  // legleds(howfar, LEG_LEDS-howfar+1).nscale8(192);
+  // legleds(howfar, LEG_LEDS-howfar).fill_solid(CRGB::Black);
+  // fadeToBlackBy(ledsl, LEG_LEDS, FADE_RATE);    
+  // legleds.fill_solid(CRGB::Black);
 
   // set the active leg leds
   colorwaves(legleds, howfar, lastPalette);
   // waveit(legleds, howfar, lastPalette);
   // alternative ways of filling leg leds
-//  fill_solid(legleds, howfar, lastColor);
-//  fill_gradient_RGB(legleds, 0, lastColor, howfar, CRGB::Black);
-//  fill_rainbow(legleds, howfar, rainbowHue, 7);
+  // fill_solid(legleds, howfar, lastColor);
+  // fill_gradient_RGB(legleds, 0, lastColor, howfar, CRGB::Black);
+  // fill_rainbow(legleds, howfar, rainbowHue, 7);
 
   // set the ring leds
   colorwaves(ringleds, RING_LEDS, lastPalette);
+  // throbit(ringleds, RING_LEDS, lastColor);
   //fill_solid(ringleds, RING_LEDS, lastColor);
 
   // set the head leds 
   colorwaves(headleds, HEAD_LEDS, lastPalette);
+  // headleds.fill_solid(lastColor);
+  // throbit(headleds, HEAD_LEDS, lastColor);
   // waveit(headleds, HEAD_LEDS, lastPalette);
 
   FastLED.show();
   
   FastLED.delay(1000/FRAMES_PER_SECOND);
 
-  senseColor();
-
   #if DEBUG
-  Serial.println("");
+    Serial.println("");
   #endif
 
 }
@@ -226,19 +238,9 @@ void detectJump(){
   yVelocity = mpu.readNormalizeAccel().YAxis; // Read normalized Y value
 
   #if DEBUG
-
-    if(jumpVelocity > hardestJump){
-      hardestJump = jumpVelocity; 
-      Serial.print("hardestJump:"); Serial.println(hardestJump);
-    }
-    
-    if(jumpVelocity < lightestJump){
-      lightestJump = jumpVelocity; 
-      Serial.print("lightestJump:"); Serial.println(lightestJump);
-    }
-    
-    Serial.print("Jump Velocity:"); Serial.print(jumpVelocity); Serial.print(",");
-
+    Serial.print("xVelocity:"); Serial.print(xVelocity); Serial.print(",");
+    Serial.print("yVelocity:"); Serial.print(yVelocity); Serial.print(",");    
+    Serial.print("zVelocity:"); Serial.print(jumpVelocity); Serial.print(",");
   #endif 
 
 }
@@ -251,7 +253,6 @@ void detectJump(){
 void senseColor(){
 
   if(noRgbSensor) {
-    Serial.println("no RGB sensor found");
     return;
   }
   
@@ -301,12 +302,9 @@ void senseColor(){
 
   // Serial.println("Gamma corrected:");
   
-  Serial.print("R:"); Serial.print(getGamma(r));
-  Serial.print(",");
-  Serial.print("G:"); Serial.print(getGamma(g));
-  Serial.print(",");
-  Serial.print("B:"); Serial.print(getGamma(b));
-  Serial.print(",");
+  // Serial.print("R:"); Serial.print(getGamma(r)); Serial.print(",");
+  // Serial.print("G:"); Serial.print(getGamma(g)); Serial.print(","); 
+  // Serial.print("B:"); Serial.print(getGamma(b)); Serial.print(",");
   
   // Serial.print("\t");
   // Serial.print(getGamma(r), HEX); Serial.print(getGamma(g), HEX); Serial.print(getGamma(b), HEX);
@@ -329,10 +327,10 @@ void colorwaves( CRGB* ledarray, int howfar, CRGBPalette16& palette) {
   uint8_t brightdepth = beatsin88( 341, 96, 255);
   uint16_t brightnessthetainc16 = beatsin88( 203, (25 * 256), (40 * 256));
   uint8_t msmultiplier = beat8(147); //beatsin88(147, 23, 60); - creates a more dynamic pattern [IH]
-  //uint8_t msmultiplier = beatsin88(map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, 24, 256), 24, 256); //- creates a more dynamic pattern [IH]
  
   uint16_t hue16 = sHue16;//gHue * 256;
   uint16_t hueinc16 = beatsin88(113, 300, 1500);
+  
   
   uint16_t ms = millis();
   uint16_t deltams = ms - sLastMillis ;
@@ -341,6 +339,8 @@ void colorwaves( CRGB* ledarray, int howfar, CRGBPalette16& palette) {
   sHue16 += deltams * beatsin88( 400, 5,9);
   uint16_t brightnesstheta16 = sPseudotime;
   
+  uint8_t gbri = beatsin8(32, 16, 255);
+
   for( uint16_t i = 0 ; i < howfar; i++) {
     hue16 += hueinc16;
     uint8_t hue8 = hue16 / 256;
@@ -359,20 +359,41 @@ void colorwaves( CRGB* ledarray, int howfar, CRGBPalette16& palette) {
     bri8 += (255 - brightdepth);
     
     uint8_t index = hue8;
-    //index = triwave8( index);
-    index = scale8( index, 64);
+    // index = triwave8( index);
+    // index = scale8( index, 64);
+    index = scale8( index, 240);
+
     #if DEBUG
       Serial.print("brightdepth:"); Serial.print(brightdepth); Serial.print(",");
       Serial.print("bri8:"); Serial.print(bri8); Serial.print(",");
-      Serial.print("brightdepth:"); Serial.print(brightdepth); Serial.print(",");
+      // Serial.print("gbri:"); Serial.print(gbri); Serial.print(",");
     #endif 
- 
+
+    bri8 = max(scale8(bri8, gbri), 8);
     CRGB newcolor = ColorFromPalette( palette, index, bri8);
  
-    uint16_t pixelnumber = i;
-    pixelnumber = (howfar-1) - pixelnumber;
+    uint16_t pixelnumber = (howfar-1) - i;
     
     nblend( ledarray[pixelnumber], newcolor, 128);
+  }
+}
+
+void throbit(CRGBSet ledarray, uint8_t howfar, CRGB& color){
+  static uint16_t sPseudotime = 0;
+  static uint16_t sLastMillis = 0;
+  uint16_t ms = millis();
+  uint16_t deltams = ms - sLastMillis ;
+  sLastMillis  = ms;
+  sPseudotime += deltams;
+
+  ledarray.fill_solid(color);
+  // uint8_t intensity = beatsin8(32, 32, 248);
+  uint8_t intensity = cubicwave8(sPseudotime / 10);
+  // intensity = cubicwave8(intensity);
+  // Serial.print("v:"); Serial.println(intensity);
+ 
+  for(uint8_t i = 0 ; i < howfar ; i++){
+    ledarray[i].fadeToBlackBy(intensity);
   }
 }
 
