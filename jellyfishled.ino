@@ -13,7 +13,7 @@ FASTLED_USING_NAMESPACE
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
 #define NUM_LEDS    15
-#define BRIGHTNESS 144
+#define BRIGHTNESS 200
 #define FRAMES_PER_SECOND 128
 #define MIN_LIT 7
 #define GAMMA_MULTIPLIER 2.5
@@ -22,10 +22,11 @@ FASTLED_USING_NAMESPACE
 #define HEAD_LEDS 36 // leds per head segment
 #define RING_LEDS 47 // leds in ring around head
 
-#define LEG_LED_PIN  10
-#define HEAD_LED_PIN 11
-#define RING_LED_PIN 12
+#define LEG_LED_PIN  GPIO_NUM_12
+#define HEAD_LED_PIN GPIO_NUM_13
+#define RING_LED_PIN GPIO_NUM_14
 
+#define USE_GYRO false
 #define GRAVITY_LOW 0
 #define GRAVITY_HIGH 12
 #define X_HIGH 5
@@ -35,7 +36,7 @@ FASTLED_USING_NAMESPACE
 #define FADE_RATE 120
 #define GRAVITY_SAMPLE_RATE 1000/512
 
-#define RGB_SENSOR_BUTTON_PIN A0
+#define RGB_SENSOR_BUTTON_PIN GPIO_NUM_27
 
 CRGB ledsl[LEG_LEDS]; // holder of all LED CRGB values for tentacles
 CRGB ledsh[HEAD_LEDS]; // holder of each head segment leds
@@ -57,7 +58,7 @@ volatile float yVelocity = 0.0;
 #endif
 
 MPU6050 mpu; // gyro device
-bool noGyro = false; // no gyro detected
+bool noGyro = true; // no gyro detected
 
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_1X);
 bool noRgbSensor = false; // no RGB sensor found
@@ -95,23 +96,29 @@ void setup() {
 
   uint8_t gyro_tries = 10; // attempt gyro detect for 5 seconds
   
-  while(!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_2G) && --gyro_tries > 0)
-  {
-    Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
-    delay(500);
-  }
-  
-  if(gyro_tries < 1){
-    noGyro = true;
-    Serial.println("No Gyro found");
+  if(USE_GYRO){
+    while(!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_2G) && --gyro_tries > 0)
+    {
+      Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
+      delay(500);
+    }
+    
+    if(gyro_tries < 1){
+      noGyro = true;
+      Serial.println("No Gyro found");
+    } else {
+      noGyro = false;
+      Serial.println("found MPU6050 gyro.");
+      #ifdef CALIBRATE_GYRO
+      Serial.print("Calibrating gyro...");
+      mpu.calibrateGyro();
+      Serial.println("calibration complete.");
+      #endif
+    }
   } else {
-    Serial.println("found MPU6050 gyro.");
-    #ifdef CALIBRATE_GYRO
-    Serial.print("Calibrating gyro...");
-    mpu.calibrateGyro();
-    Serial.println("calibration complete.");
-    #endif
+    noGyro = true;
   }
+
 
   Serial.print("Initialize TCS34725...");
   if (tcs.begin()) {
@@ -230,7 +237,7 @@ void loop() {
 void detectJump(){
   
   if(noGyro){
-    return false;
+    return;
   }
 
   jumpVelocity = mpu.readNormalizeAccel().ZAxis; // Read normalized Z value
@@ -369,7 +376,7 @@ void colorwaves( CRGB* ledarray, int howfar, CRGBPalette16& palette) {
       // Serial.print("gbri:"); Serial.print(gbri); Serial.print(",");
     #endif 
 
-    bri8 = max(scale8(bri8, gbri), 8);
+    bri8 = max((int) scale8(bri8, gbri), 8);
     CRGB newcolor = ColorFromPalette( palette, index, bri8);
  
     uint16_t pixelnumber = (howfar-1) - i;
