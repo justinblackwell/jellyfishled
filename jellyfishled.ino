@@ -2,13 +2,24 @@
 #include <MPU6050.h>
 #include <Adafruit_TCS34725.h>
 #include <FastLED.h>
+#include <WiFi.h>
+#include <WebServer.h>
 
+/* Put your SSID & Password */
+const char* ssid = "ESP32";  // Enter SSID here
+const char* password = "12345678";  //Enter Password here
+
+/* Put IP Address details */
+IPAddress local_ip(10,1,1,1);
+IPAddress gateway(10,1,1,1);
+IPAddress subnet(255,255,255,0);
+
+WebServer server(80);
 
 FASTLED_USING_NAMESPACE
 
 #define DEBUG false
 #define DEBUG_POWER false
-#define CALIBRATE_GYRO false
 
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
@@ -16,7 +27,7 @@ FASTLED_USING_NAMESPACE
 #define BRIGHTNESS 200
 #define FRAMES_PER_SECOND 128
 #define MIN_LIT 7
-#define GAMMA_MULTIPLIER 2.5
+#define FADE_RATE 120
 
 #define LEG_LEDS  15 // leds per tentacle
 #define HEAD_LEDS 36 // leds per head segment
@@ -27,16 +38,18 @@ FASTLED_USING_NAMESPACE
 #define RING_LED_PIN GPIO_NUM_14
 
 #define USE_GYRO false
+#define CALIBRATE_GYRO false
 #define GRAVITY_LOW 0
 #define GRAVITY_HIGH 12
 #define X_HIGH 5
 #define X_LOW -5
 #define Y_HIGH 5
 #define Y_LOW -5
-#define FADE_RATE 120
 #define GRAVITY_SAMPLE_RATE 1000/512
 
+#define USE_SENSOR false
 #define RGB_SENSOR_BUTTON_PIN GPIO_NUM_27
+#define GAMMA_MULTIPLIER 2.5
 
 CRGB ledsl[LEG_LEDS]; // holder of all LED CRGB values for tentacles
 CRGB ledsh[HEAD_LEDS]; // holder of each head segment leds
@@ -67,10 +80,12 @@ CRGB lastColor = CRGB::Blue;
 // CRGBPalette16 lastPalette = OceanColors_p;
 CRGBPalette16 lastPalette(lastColor);
 
+volatile bool doRainbow = true;
+
 void setup() {
   
   delay(3000);
-  Serial.begin(115200);
+  Serial.begin(921600);
   
   // init all strips on their respective data pins
 
@@ -90,13 +105,13 @@ void setup() {
   FastLED.setDither(BRIGHTNESS < 255);
 
   // power mgmt
-  FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
+  // FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
 
-  Serial.print("Initialize MPU6050...");
-
-  uint8_t gyro_tries = 10; // attempt gyro detect for 5 seconds
-  
   if(USE_GYRO){
+    Serial.print("Initialize MPU6050...");
+
+    uint8_t gyro_tries = 10; // attempt gyro detect for 5 seconds
+
     while(!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_2G) && --gyro_tries > 0)
     {
       Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
@@ -119,17 +134,36 @@ void setup() {
     noGyro = true;
   }
 
+  if(USE_SENSOR){
+    Serial.print("Initialize TCS34725...");
+    if (tcs.begin()) {
+      Serial.println("Found RGB sensor");
+      tcs.setInterrupt(true);
+    } else {
+      noRgbSensor = true;
+      Serial.println("No TCS34725 found ... check your connections");
+    }
 
-  Serial.print("Initialize TCS34725...");
-  if (tcs.begin()) {
-    Serial.println("Found RGB sensor");
-    tcs.setInterrupt(true);
+    // setup the sensor switch
+    pinMode(RGB_SENSOR_BUTTON_PIN, INPUT_PULLUP);
+
   } else {
     noRgbSensor = true;
-    Serial.println("No TCS34725 found ... check your connections");
   }
 
-  pinMode(RGB_SENSOR_BUTTON_PIN, INPUT_PULLUP);
+
+  WiFi.softAP(ssid, password);
+  WiFi.softAPConfig(local_ip, gateway, subnet);
+  delay(100);
+  
+  server.on("/", handle_dashboard);
+  server.on("/rainbow", handle_rainbow);
+  server.on("/normal", handle_normal);
+  server.onNotFound(handle_404);
+  
+  server.begin();
+  Serial.println("HTTP server started");
+
 
   Serial.println("all systems go.");
   
@@ -150,9 +184,9 @@ uint8_t getGamma(float x){
 
 void loop() {
 
-  static uint8_t howfar = MIN_LIT; // start with the minimum leds lit
+  server.handleClient();
 
-  static uint32_t headled_mw, ringled_mw, legled_mw;
+  static uint8_t howfar = LEG_LEDS; // start with the minimum leds lit
 
   EVERY_N_MILLISECONDS( 1000/FRAMES_PER_SECOND ) { 
     rainbowHue +=1; // slowly cycle the "base color" through the rainbow
@@ -160,10 +194,16 @@ void loop() {
 
   EVERY_N_MILLISECONDS( GRAVITY_SAMPLE_RATE ) { 
     detectJump();
-    howfar = (uint8_t) map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
+    if(noGyro){
+      howfar = LEG_LEDS;
+    } else {
+      howfar = (uint8_t) map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
+    }
   }
 
   #if DEBUG_POWER
+    static uint32_t headled_mw, ringled_mw, legled_mw;
+
     EVERY_N_SECONDS( 2 ) {
 
       headled_mw = scale8(8 * calculate_unscaled_power_mW(headleds, HEAD_LEDS), BRIGHTNESS);
@@ -186,9 +226,6 @@ void loop() {
     }
   #endif
 
-  // detectJump();
-  // howfar = (uint8_t) map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, MIN_LIT, LEG_LEDS);
-
   #if DEBUG
     Serial.print("howfar:"); Serial.print(howfar); Serial.print(",");
     Serial.print("R:"); Serial.print(lastColor.r); Serial.print(",");
@@ -196,33 +233,39 @@ void loop() {
     Serial.print("B:"); Serial.print(lastColor.b); Serial.print(",");
   #endif
 
-  senseColor(); // read RGB sensor 
+  //senseColor(); // read RGB sensor 
+  // if(false)
+  if(doRainbow){
+    fill_rainbow(legleds, howfar, rainbowHue, 7);
+    fill_rainbow(headleds, HEAD_LEDS, rainbowHue, 7);
+    fill_rainbow(ringleds, RING_LEDS, rainbowHue, 7);
+  } else {
+    // fade out unused legleds
+    legleds(howfar, LEG_LEDS).fadeToBlackBy(FADE_RATE);
+    // legleds(howfar, LEG_LEDS-howfar+1).nscale8(192);
+    // legleds(howfar, LEG_LEDS-howfar).fill_solid(CRGB::Black);
+    // fadeToBlackBy(ledsl, LEG_LEDS, FADE_RATE);    
+    // legleds.fill_solid(CRGB::Black);
 
-  // fade out unused legleds
-  legleds(howfar, LEG_LEDS).fadeToBlackBy(FADE_RATE);
-  // legleds(howfar, LEG_LEDS-howfar+1).nscale8(192);
-  // legleds(howfar, LEG_LEDS-howfar).fill_solid(CRGB::Black);
-  // fadeToBlackBy(ledsl, LEG_LEDS, FADE_RATE);    
-  // legleds.fill_solid(CRGB::Black);
+    // set the active leg leds
+    colorwaves(legleds, howfar, lastPalette);
+    // waveit(legleds, howfar, lastPalette);
+    // alternative ways of filling leg leds
+    // fill_solid(legleds, howfar, lastColor);
+    // fill_gradient_RGB(legleds, 0, lastColor, howfar, CRGB::Black);
+    // fill_rainbow(legleds, howfar, rainbowHue, 7);
 
-  // set the active leg leds
-  colorwaves(legleds, howfar, lastPalette);
-  // waveit(legleds, howfar, lastPalette);
-  // alternative ways of filling leg leds
-  // fill_solid(legleds, howfar, lastColor);
-  // fill_gradient_RGB(legleds, 0, lastColor, howfar, CRGB::Black);
-  // fill_rainbow(legleds, howfar, rainbowHue, 7);
+    // set the ring leds
+    colorwaves(ringleds, RING_LEDS, lastPalette);
+    // throbit(ringleds, RING_LEDS, lastColor);
+    //fill_solid(ringleds, RING_LEDS, lastColor);
 
-  // set the ring leds
-  colorwaves(ringleds, RING_LEDS, lastPalette);
-  // throbit(ringleds, RING_LEDS, lastColor);
-  //fill_solid(ringleds, RING_LEDS, lastColor);
-
-  // set the head leds 
-  colorwaves(headleds, HEAD_LEDS, lastPalette);
-  // headleds.fill_solid(lastColor);
-  // throbit(headleds, HEAD_LEDS, lastColor);
-  // waveit(headleds, HEAD_LEDS, lastPalette);
+    // set the head leds 
+    colorwaves(headleds, HEAD_LEDS, lastPalette);
+    // headleds.fill_solid(lastColor);
+    // throbit(headleds, HEAD_LEDS, lastColor);
+    // waveit(headleds, HEAD_LEDS, lastPalette);
+  }
 
   FastLED.show();
   
@@ -385,42 +428,59 @@ void colorwaves( CRGB* ledarray, int howfar, CRGBPalette16& palette) {
   }
 }
 
-void throbit(CRGBSet ledarray, uint8_t howfar, CRGB& color){
-  static uint16_t sPseudotime = 0;
-  static uint16_t sLastMillis = 0;
-  uint16_t ms = millis();
-  uint16_t deltams = ms - sLastMillis ;
-  sLastMillis  = ms;
-  sPseudotime += deltams;
-
-  ledarray.fill_solid(color);
-  // uint8_t intensity = beatsin8(32, 32, 248);
-  uint8_t intensity = cubicwave8(sPseudotime / 10);
-  // intensity = cubicwave8(intensity);
-  // Serial.print("v:"); Serial.println(intensity);
- 
-  for(uint8_t i = 0 ; i < howfar ; i++){
-    ledarray[i].fadeToBlackBy(intensity);
-  }
+void handle_404(){
+  server.send(404, "text/plain", "Not found");
 }
 
-void waveit(CRGB* ledarray, int howfar, CRGBPalette16& palette){
-  //int rate = map(constrain(jumpVelocity, GRAVITY_LOW, GRAVITY_HIGH), GRAVITY_LOW, GRAVITY_HIGH, 20, 150);
-  // uint8_t bri = beatsin8(32, 32, 248);
-  
-  uint8_t index = beatsin8(40, 200, 255);
-  CHSV newcolor = rgb2hsv_approximate(lastColor);
-  newcolor.saturation = index;
-  for(uint8_t i = 0 ; i < howfar ; i++){
-    // uint8_t bri = inoise8(i);
-    // uint16_t index = scale8(128, i);
-    // Serial.print("scale:"); Serial.print(scale); Serial.print(",");
-    // CRGB newcolor = ColorFromPalette(palette, 0, scale);
-    // ledarray[i] = newcolor;
-    // ledarray[i] = ColorFromPalette(palette, index, bri);
-    // nblend( ledarray[i], ColorFromPalette(palette, index, bri), 128 );
-    ledarray[i] = newcolor;
+void handle_normal(){
+  Serial.println("handled /normal");
+  doRainbow = false;
+  server.send(200, "application/json", "{status:0, state:\"normal\"}");  
+}
 
-  }
-  
+void handle_rainbow(){
+  Serial.println("handled /rainbow");
+  doRainbow = true;
+  server.send(200, "application/json", "{status:0, state:\"rainbow\"}");
+}
+
+void handle_dashboard(){
+  Serial.println("handled /");
+  // server.send(200, "text/plain", "hello world");
+  // return;
+  server.send(200, "text/html", R"END(<!DOCTYPE html>
+  <html>
+  <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Jellyfish Control</title>
+  <style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
+  body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}
+  button {display: block;width: 80px;background-color: #3498db;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}
+  button-on {background-color: #3498db;}
+  button-on:active {background-color: #2980b9;}
+  button-off {background-color: #34495e;}
+  button-off:active {background-color: #2c3e50;}
+  p {font-size: 14px;color: #888;margin-bottom: 10px;}
+  </style>
+  </head>
+  <body>
+  <h1>Jellyfish Control</h1>
+  <h3>Using Access Point(AP) Mode</h3>
+  <a class="button" href="/rainbow">Rainbow</a> | <a class="button" href="/normal">Normal</a>
+
+  <script type="text/javascript">
+  document.querySelectorAll("a.button").forEach((button) => {
+    let href = button.getAttribute('href');
+    button.addEventListener('click', (e) => {
+      e.preventDefault();
+      fetch(href).then((resp) => {
+        console.log(resp);
+      })
+      return false;
+    })
+  });
+  </script>
+  </body>
+  </html>  
+  )END");
 }
